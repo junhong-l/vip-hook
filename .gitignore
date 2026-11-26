@@ -10,3 +10,7 @@ build/
 # 本地备份产物
 viphook_v1.apk
 viphook_v2.apk
+
+# 任何密钥副本/备份
+*keystore*
+*.bak
