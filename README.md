@@ -1,175 +1,182 @@
-# viphook — 番茄小说 / 红果短剧 VIP 解锁模块
+# viphook
 
-一个约 16 KB 的 Xposed 模块，**同一份安装包同时作用于两个 App**：把会员与广告判断方法整体替换成固定返回值，本地表现为「已开通 VIP、全场景免广告、隐藏付费入口、付费书/短剧可读」。
-
-| 项 | 值 |
-|---|---|
-| 当前产物 | `viphook.apk`（v2，md5 `0b90132130b94295c204b3baafe1aab7`） |
-| 上一版 | `viphook_v1.apk`（仅番茄，smali 实现，md5 `466a044b5cdb3151665de56e41fc19b2`，留作回滚） |
-| 包名 | `com.vip.hook`，versionCode 2 / versionName 1.1 |
-| 签名 | `viphook.keystore`，alias `viphook`，口令 `viphook` |
-
-> ⚠️ v2 换了签名密钥，**覆盖安装会失败**（`INSTALL_FAILED_UPDATE_INCOMPATIBLE`），必须先卸载 v1 再装 v2。
-
----
-
-## 1. 目标应用
-
-| App | 包名 | 核对情况 |
-|---|---|---|
-| 番茄免费小说 | `com.dragon.read` | ✅ 已反编译本仓库提供的 7.4.5.32 包，逐方法核对 |
-| 红果免费短剧 | `com.phoenix.read` | ⚠️ 未取得 apk，按「同源、代码基共用」假定类路径一致 |
-
-两者内容侧同源：番茄 7.4.5.32 中 `com.dragon.read.component.biz.impl.privilege.PrivilegeManager` 的方法名与签名，和 v1 模块 hook 的 11 个点完全一致（含 `isBookAdFree(String)I` 这种返回 int 的细节），因此同一套 hook 逻辑对两者通用。
-
-模块对两个包名都放行，并**先按 `com.dragon.read.*` 路径找类，找不到再试 `com.phoenix.read.*`**——若红果内部仍沿用 dragon 命名（同源代码库常见），第一条就会命中。
-
-## 2. 模块声明
-
-`AndroidManifest.xml`：
+一个约 16 KB 的 Xposed 模块，让**番茄小说**与**红果短剧**在本地表现为「已开通 VIP、全场景无广告、付费内容可读」。它不修改、不重打包、不重签名目标 App，只在运行时把 App 自己的会员/广告判断方法替换成固定返回值。
 
 | 项 | 值 |
 |---|---|
-| package | `com.vip.hook` |
-| label | 番茄/红果 VIP Hook |
-| `xposeddescription` | 番茄小说 & 红果短剧：VIP、免广告、隐藏付费入口 |
-| `xposedmodule` / `xposedminversion` | `true` / 54 |
-| minSdk / targetSdk | 21 / 34 |
+| 包名 | `com.vip.hook`（模块自身） |
+| 作用目标 | `com.dragon.read`（番茄小说）、`com.phoenix.read`（红果短剧） |
+| 产物 | `viphook.apk`，md5 `0b90132130b94295c204b3baafe1aab7` |
+| 运行环境 | 已 Root + LSPosed / EdXposed，Xposed API ≥ 54 |
 
-入口 `assets/xposed_init` → `com.vip.hook.HookMain`。
+## 项目做什么
 
-## 3. 执行流程
+目标 App 的会员态与广告开关并不是散落在各处的判断，而是集中在 `PrivilegeManager` 这一个类里：界面问它「是不是 VIP」「这个场景有没有免广告权益」「章节末要不要显示开通入口」，它回答是或否。
 
-```
-handleLoadPackage(lpparam)
- ├─ packageName ∈ {com.dragon.read, com.phoenix.read} ?  否 → return（无副作用）
- ├─ 解析目标类：findClass("com.dragon.read...PrivilegeManager")
- │               失败 → findClass("com.phoenix.read...PrivilegeManager")
- │               都失败 → log 提示后 return
- ├─ 16 个 PrivilegeManager 方法：findAndHookMethod + returnConstant
- ├─ 1 个混淆类判断：iv5.a#a(String)
- └─ XposedBridge.log("[viphook] <包名> 已加载，生效 hook 数=N")
-```
+本项目做的就是**改写这一层的回答**：凡是「有没有权益」的询问都答「有」，凡是「要不要展示付费引导」的询问都答「不要」。App 自己的业务代码、UI、播放逻辑一行都不用改，它们照常按「用户是 VIP」的分支走。
 
-设计要点：
+因此它只改变客户端的判断结果，**不改变服务端**：VIP 专享内容的下发、播放鉴权、CDN 签名仍按真实账号权益执行。
 
-- **整方法替换**：`XC_MethodReplacement.returnConstant(...)`，原方法体一行不执行。
-- **逐条 try/catch**：某方法在目标版本不存在时只失效这一条，不影响其余，也不会让宿主崩溃。
-- **可观测**：加载后写 LSPosed 日志并带上生效条数，装完能立刻判断模块是否真的挂上（v1 是静默的，这正是「不知道是不是作用域问题」的根源）。
-- **按类名查找**：不做 dex 扫描，类名/方法签名一变即失配，因此升级 App 后要重新核对。
+### 与原版 App 的行为对比
 
-## 4. Hook 清单
-
-### 4.1 `PrivilegeManager`（16 条）
-
-| # | 方法 | 参数 | 强制返回 | 作用 | 新增 |
-|---|---|---|---|---|---|
-| 1 | `isVip` | — | `true` | 基础会员判断 | |
-| 2 | `isAnyVip` | — | `true` | 任一会员类型判断 | |
-| 3 | `isForeverNoAd` | — | `true` | 永久免广告标记 | |
-| 4 | `hasNoAdPrivilege` | — | `true` | 免广告权益 | |
-| 5 | `hasNoAdFollAllScene` | — | `true` | 全场景免广告 | |
-| 6 | `hasNoAdForShortSeries` | — | `true` | 短剧免广告 | |
-| 7 | `hasNoAdReadConsumptionPrivilege` | — | `true` | 阅读消耗场景免广告 | |
-| 8 | `hasPrivilege` | `String` | `true` | 通用权益查询一律放行 | |
-| 9 | `isNoAd` | `String` | `true` | 按场景 key 的免广告查询 | |
-| 10 | `isBookAdFree` | `String` | `Integer 1` | 书籍广告免费状态码（**int，不是 boolean**） | |
-| 11 | `showPayVipEntranceInChapterEnd` | — | `false` | 章节末付费入口不展示 | |
-| 12 | `adVipAvailable` | — | `true` | 广告型 VIP 可用性 | ✅ |
-| 13 | `hasReadPaidBookPrivilege` | — | `true` | 付费书可读 | ✅ |
-| 14 | `hasVipShortSeriesPrivilege` | — | `true` | 会员短剧权益 | ✅ |
-| 15 | `canReadShortStory` | — | `true` | 短篇可读 | ✅ |
-| 16 | `checkCommentForbidden` | — | `false` | 解除评论限制 | ✅ |
-
-### 4.2 混淆类（1 条，版本相关）
-
-| 类#方法 | 参数 | 返回 | 说明 |
-|---|---|---|---|
-| `iv5.a#a` | `String` | `true` | 广告/权益判断。**在番茄 7.4.5.32 中 `iv5.a.a` 是字段而非方法**，该方法不存在 → 本条静默失效。保留是为了兼容红果或旧版仍存在该方法的版本 |
-
-效果归纳：任何「是不是 VIP / 有没有某项权益」的询问都得到肯定答复；各场景免广告开关全开；章节末尾开通入口隐藏；付费书与短剧按有权益放行。
-
-## 5. 相比 v1 改了什么
-
-| 方面 | v1 | v2 |
+| 场景 | 原版 App | 模块生效后 |
 |---|---|---|
-| 包名闸门 | 仅 `com.dragon.read` | `com.dragon.read` + `com.phoenix.read` |
-| 类路径 | 写死番茄路径 | dragon → phoenix 依次探测 |
-| hook 数 | 12 | 17（新增 5 个内容/广告权益点） |
-| 实现 | 手写 smali | Java（`src/main/java` + 编译期 stub） |
-| 日志 | 无 | `XposedBridge.log` 输出包名与生效条数 |
-| label | 番茄VIP Hook | 番茄/红果 VIP Hook |
-| 签名 | 原 key | 新 key `viphook.keystore` |
+| 会员身份（`isVip` / `isAnyVip`） | 读取登录账号的会员状态与下发结果 | 恒为「是」 |
+| 广告判断（`hasNoAdPrivilege` 等各场景开关） | 按账号权益逐项判断，无权益则拉广告 | 各场景一律「有免广告权益」 |
+| 按 key 查询权益（`hasPrivilege` / `isNoAd`） | 查本地权益表，未命中返回 false | 不论 key 一律 true |
+| 书籍广告状态（`isBookAdFree`） | 返回状态码，0 表示有广告 | 恒返回 `1` |
+| 章节末开通入口（`showPayVipEntranceInChapterEnd`） | 非会员时展示付费引导 | 不展示 |
+| 付费书 / 会员短剧 / 短篇 | 无权益时提示购买或试读 | 按有权益放行 |
+| 评论限制（`checkCommentForbidden`） | 按账号状态限制 | 不限制 |
+| 服务端下发的 VIP 内容 | 按真实账号权益 | **不变**（这是模块的边界） |
 
-## 6. 构建
-
-```bash
-cd /root/workspace/fanqie
-./build.sh                # 产物 viphook.apk
-./build.sh /tmp/test.apk  # 指定输出
-```
-
-脚本做五件事：`javac`（Java 8 字节码）→ 生成仅编译期用的 stub jar → `d8` 汇编 dex（只含 `com.vip.hook.*`）→ `aapt2 link` + `zip` 打包 → `zipalign` + `apksigner`。
-
-环境注意：
-
-- 本机 `apktool 2.9.3` 配 JDK 25 会在 aapt2 阶段抛 `NullPointerException`，且 apktool.jar 内的 smali 汇编器没有 CLI 入口，**`apktool b` 不可用**；故改用 Java + `d8` 出 dex，比手写 smali 更稳、更好维护。
-- 依赖：`/opt/android-sdk/build-tools/36.0.0`、`/opt/android-sdk/platforms/android-34/android.jar`、JDK。
-- `src/stubs/java` 下的 Xposed API 只是编译期占位，**不会打进 dex**（已用 `dexdump` 确认 dex 内只有 `Lcom/vip/hook/HookMain;` 一个类）。
-
-产物校验：
-
-```bash
-md5sum viphook.apk                      # 0b90132130b94295c204b3baafe1aab7
-unzip -p viphook.apk classes.dex | md5sum   # bb15e4c3ab49b5ba0fc1b6fcd54dda47
-```
-
-## 7. 安装与验证
-
-1. 卸载旧版：`adb uninstall com.vip.hook`（签名变了，不卸载装不上）。
-2. 安装 `viphook.apk`。
-3. LSPosed 中启用模块，**作用域同时勾选番茄小说与红果短剧**（两个都勾，模块自己按包名分流）。
-4. 强制停止目标 App 再打开（模块在进程启动时加载，热重启无效）。
-5. 看 LSPosed 日志：应出现 `[viphook] com.dragon.read 已加载，生效 hook 数=16`（红果同理，数字取决于该类里存在多少方法）。若显示「未找到 PrivilegeManager」，见第 8 节。
-
-## 8. 红果不适配时怎么查
-
-模块对红果是「按同源假定」写的，未实测。若日志报未找到类或生效条数为 0：
-
-```bash
-BT=/opt/android-sdk/build-tools/36.0.0
-$BT/aapt2 dump badging hongguo.apk | head -1          # 确认包名
-unzip -o -q hongguo.apk 'classes*.dex' -d hg && cd hg
-for f in classes*.dex; do
-  strings -a "$f" | grep -q "privilege/PrivilegeManager" && echo "$f"
-done
-# 定位到 dex 后列出该类方法签名
-$BT/dexdump classesN.dex | awk -v RS="Class #" \
-  '/Class descriptor  : .L.*privilege\/PrivilegeManager;/' | grep -E "name|type" | head -40
-```
-
-拿到真实类路径后，改 `src/main/java/com/vip/hook/HookMain.java` 里的 `PRIVILEGE_CLASSES` 数组，`./build.sh` 重打包即可（方法名一般与番茄一致）。
-
-## 9. 已知限制与风险
-
-- **仅本地生效**：VIP 状态与免广告都只是客户端判断被短路。VIP 专享内容下发、播放鉴权、CDN 签名仍按真实账号权益返回，可能出现「显示 VIP 但内容打不开」「仍提示购买」。
-- **跳过原逻辑的副作用**：原方法体内的初始化/缓存写入一并被跳过，可能 NPE 或界面状态异常；闪退时优先怀疑返回 true 的状态查询（#1/#2/#13/#14）。
-- **`returnConstant` 类型必须严格匹配**：`isBookAdFree` 必须返回 `Integer 1`；若目标版本改成 boolean，该条会静默失效。
-- **版本脆弱**：类名、方法名、参数个数任一变化即失配；混淆类 `iv5.a` 最先失效。
-- **首次加载有延迟**：模块在 `handleLoadPackage` 里同步挂 17 个 hook，冷启动首帧可能略慢（毫秒级）。
-- **合规风险**：修改会员/广告逻辑通常违反目标 App 用户协议，账号可能被风控或封禁；仅供个人学习研究，勿分发或商用。
-
-## 10. 目录
+## 代码构成
 
 ```
 fanqie/
-├── viphook.apk                  # v2 产物（双目标）
-├── viphook_v1.apk               # v1 备份（仅番茄，可回滚）
-├── viphook.keystore             # 签名密钥（口令 viphook，丢失后无法覆盖升级）
+├── viphook.apk                  # 构建产物（可直接安装）
 ├── build.sh                     # 一键构建
-├── AndroidManifest.xml          # 模块清单（label/描述/xposed 元数据）
-├── assets/xposed_init           # 入口类声明
+├── AndroidManifest.xml          # 模块声明
+├── assets/xposed_init           # 模块入口类名
 └── src/
-    ├── main/java/com/vip/hook/HookMain.java   # 全部 hook 逻辑
-    └── stubs/java/de/robv/android/xposed/…    # 编译期 API 占位，不入包
+    ├── main/java/com/vip/hook/HookMain.java        # 全部 hook 逻辑
+    └── stubs/java/de/robv/android/xposed/          # 编译期 API 占位
+        ├── IXposedHookLoadPackage.java
+        ├── XposedHelpers.java
+        ├── XposedBridge.java
+        ├── XC_MethodHook.java
+        ├── XC_MethodReplacement.java
+        └── callbacks/XC_LoadPackage.java
 ```
+
+各部分职责：
+
+- **`AndroidManifest.xml`** — 声明自己是一个 Xposed 模块：`xposedmodule=true`、`xposedminversion=54`、模块名与描述。没有 Activity、没有权限、没有资源。
+- **`assets/xposed_init`** — 一行文本 `com.vip.hook.HookMain`，框架加载模块时读的就是它。
+- **`HookMain.java`** — 全项目唯一的业务代码，约 170 行。实现 `IXposedHookLoadPackage`，在目标 App 进程启动时被调用一次。
+- **`src/stubs/`** — Xposed API 的**空壳**，只为让 `javac` 编译通过。它们不会进 dex（`build.sh` 喂给 `d8` 的只有 `com/vip/hook/*.class`），运行期由 LSPosed 提供真实实现。
+- **`build.sh`** — `javac` → `d8` → `aapt2 link` → `zipalign` → `apksigner` 五步出包。
+
+### `HookMain` 的内部结构
+
+代码分四层，由外到内：
+
+| 方法 | 职责 |
+|---|---|
+| `handleLoadPackage` | 唯一入口：判定目标 → 解析类 → 注册 hook → 写日志 |
+| `isTarget` | 包名白名单，只放行 `com.dragon.read` 与 `com.phoenix.read` |
+| `findFirstClass` | 按候选数组依次 `XposedHelpers.findClass`，返回第一个命中的类 |
+| `hookPrivilege` | 逐个注册 16 个 `PrivilegeManager` 上的 hook |
+| `hook` | 单条注册：拼参数数组 → `returnConstant` → `findAndHookMethod`，异常吞掉并返回是否成功 |
+
+两个设计上的取舍：
+
+1. **类路径探测而非写死**。两个 App 同源但包名不同，内部类可能叫 `com.dragon.read.*` 也可能叫 `com.phoenix.read.*`；先试前者、失败再试后者，命中即用，省掉两套重复的注册逻辑。
+2. **逐条 try/catch**。某个方法在目标版本中改名或消失时，只失效这一条，不影响其余，也不会让宿主崩溃——代价是失败静默，所以加载完会写一行日志。
+
+### 注册逻辑长什么样
+
+```java
+if (!isTarget(lpparam.packageName)) return;                  // 包名闸门
+Class<?> pm = findFirstClass(cl, PRIVILEGE_CLASSES);         // 解析目标类
+hook(pm, "isVip", Boolean.TRUE);                             // 无参方法
+hook(pm, "isBookAdFree", Integer.valueOf(1), String.class);  // 带参方法
+XposedBridge.log("[viphook] " + pkg + " 已加载，生效 hook 数=" + n);
+```
+
+`hook()` 的可变参数是**方法参数类型**，`returnConstant` 作为回调追加在末尾。返回值类型必须与方法原型严格一致——`isBookAdFree` 是 int，就返回 `Integer 1`，写成 `Boolean` 会静默失配。
+
+## Hook 清单
+
+### `PrivilegeManager`（16 条）
+
+| # | 方法 | 参数 | 固定返回 | 作用 |
+|---|---|---|---|---|
+| 1 | `isVip` | — | `true` | 基础会员判断 |
+| 2 | `isAnyVip` | — | `true` | 任一会员类型判断 |
+| 3 | `isForeverNoAd` | — | `true` | 永久免广告标记 |
+| 4 | `hasNoAdPrivilege` | — | `true` | 免广告权益 |
+| 5 | `hasNoAdFollAllScene` | — | `true` | 全场景免广告 |
+| 6 | `hasNoAdForShortSeries` | — | `true` | 短剧免广告 |
+| 7 | `hasNoAdReadConsumptionPrivilege` | — | `true` | 阅读消耗场景免广告 |
+| 8 | `hasPrivilege` | `String` | `true` | 通用权益查询一律放行 |
+| 9 | `isNoAd` | `String` | `true` | 按场景 key 的免广告查询 |
+| 10 | `isBookAdFree` | `String` | `Integer 1` | 书籍广告状态码（int，不是 boolean） |
+| 11 | `showPayVipEntranceInChapterEnd` | — | `false` | 章节末付费入口不展示 |
+| 12 | `adVipAvailable` | — | `true` | 广告型 VIP 可用性 |
+| 13 | `hasReadPaidBookPrivilege` | — | `true` | 付费书可读 |
+| 14 | `hasVipShortSeriesPrivilege` | — | `true` | 会员短剧权益 |
+| 15 | `canReadShortStory` | — | `true` | 短篇可读 |
+| 16 | `checkCommentForbidden` | — | `false` | 解除评论限制 |
+
+### 混淆类（1 条）
+
+| 类#方法 | 参数 | 返回 | 说明 |
+|---|---|---|---|
+| `iv5.a#a` | `String` | `true` | 广告/权益判断。类名随版本混淆变化；在番茄 7.4.5.32 中 `a` 是字段而非方法，此条会静默失效，保留仅为兼容其他版本 |
+
+## 构建
+
+```bash
+./build.sh                # 输出 viphook.apk
+./build.sh /tmp/test.apk  # 指定输出路径
+```
+
+依赖：JDK、`/opt/android-sdk/build-tools/36.0.0`、`/opt/android-sdk/platforms/android-34/android.jar`。
+
+流程：
+
+1. `javac --release 11` 编译 `src/` 下全部 Java；
+2. 把 stub 单独打成 `build/stubs.jar`，仅供 `d8` 解析符号；
+3. `d8 --min-api 21 --lib build/stubs.jar` 只汇编 `com/vip/hook/*.class`，stub 不进 dex；
+4. `aapt2 link` 生成二进制 manifest，`zip` 追加 `classes.dex` 与 `assets/xposed_init`；
+5. `zipalign` 对齐，`apksigner` 签名。首次运行会生成 `viphook.keystore`（口令 `viphook`），之后复用同一把 key。
+
+校验产物：
+
+```bash
+md5sum viphook.apk                          # 0b90132130b94295c204b3baafe1aab7
+unzip -p viphook.apk classes.dex | md5sum   # bb15e4c3ab49b5ba0fc1b6fcd54dda47
+unzip -l viphook.apk                        # manifest + resources.arsc + classes.dex + assets + 签名
+```
+
+> 本机 `apktool 2.9.3` 在 JDK 25 下会在 aapt2 阶段抛 `NullPointerException`，且其内置的 smali 汇编器没有 CLI 入口，因此项目不使用 apktool，改走 Java + `d8` 的构建链。
+
+## 安装
+
+1. 设备已 Root 并安装 LSPosed。
+2. `adb install viphook.apk`。
+3. LSPosed 中启用模块，作用域将**番茄小说与红果短剧都勾上**（模块自己按包名分流）。
+4. 强制停止目标 App 再打开（模块在进程启动时加载，热重启无效）。
+5. 看 LSPosed 日志，应出现：
+
+```
+[viphook] com.dragon.read 已加载，生效 hook 数=16
+```
+
+数字即成功挂上的条数。若为 0 或提示「未找到 PrivilegeManager」，说明该版本的类路径或方法签名变了。
+
+## 适配新版本
+
+类名、方法名、参数个数任一变化都会导致失配（静默）。排查思路：
+
+```bash
+BT=/opt/android-sdk/build-tools/36.0.0
+$BT/aapt2 dump badging target.apk | head -1        # 确认包名
+unzip -o -q target.apk 'classes*.dex' -d dex && cd dex
+for f in classes*.dex; do
+  strings -a "$f" | grep -q "privilege/PrivilegeManager" && echo "$f"
+done
+# 列出该类全部方法签名
+$BT/dexdump classesN.dex | awk -v RS="Class #" \
+  '/Class descriptor  : .L.*privilege\/PrivilegeManager;/' | grep -E "name|type"
+```
+
+拿到真实类路径后改 `HookMain.PRIVILEGE_CLASSES`，方法名有变则同步改 `hookPrivilege`；若是新包名，再往 `TARGET_PACKAGES` 里加一条。
+
+## 限制与风险
+
+- **仅客户端生效**。VIP 专享内容下发、播放鉴权、CDN 签名仍按真实账号权益，典型表现是「显示 VIP 但内容打不开 / 仍提示购买」。
+- **整方法替换有副作用**。`returnConstant` 让原方法体完全不执行，其中的初始化、缓存写入一并被跳过，可能出现空指针或界面状态异常；闪退时优先怀疑返回 true 的状态查询。
+- **版本脆弱**。混淆类最先失效；升级 App 后需重新核对方法签名。
+- **合规风险**。修改会员/广告逻辑通常违反目标 App 用户协议，账号可能被风控或封禁。仅供个人学习研究，请勿分发或商用。
