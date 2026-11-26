@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.vip.hook">
+    <application android:label="番茄/红果 VIP Hook">
+        <meta-data android:name="xposedmodule" android:value="true" />
+        <meta-data android:name="xposeddescription" android:value="番茄小说 &amp; 红果短剧：VIP、免广告、隐藏付费入口" />
+        <meta-data android:name="xposedminversion" android:value="54" />
+    </application>
+</manifest>
