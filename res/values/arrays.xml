@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 模块作用域：番茄小说 / 红果短剧 / 酷安 -->
+    <string-array name="xposedscope">
+        <item>com.dragon.read</item>
+        <item>com.phoenix.read</item>
+        <item>com.coolapk.market</item>
+    </string-array>
+</resources>

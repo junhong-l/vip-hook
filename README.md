@@ -174,6 +174,33 @@ $BT/dexdump classesN.dex | awk -v RS="Class #" \
 
 拿到真实类路径后改 `HookMain.PRIVILEGE_CLASSES`，方法名有变则同步改 `hookPrivilege`；若是新包名，再往 `TARGET_PACKAGES` 里加一条。
 
+## 2.0 新增
+
+| 能力 | 目标 | 实现 |
+|---|---|---|
+| 移除底部「赚钱」tab | 番茄小说 | hook `com.dragon.read.pages.main.m5` 中入参为 `BookStoreAlignmentData` 的方法（`p`），在落库前从 `tabBarList` / `tabBarTypes` 里剔除 `BottomTabBarItemType.LuckyBenefit` |
+| 移除底部「商城」tab | 红果短剧 | 同一套逻辑；红果的落库类是 `com.dragon.read.pages.main.b5`（同名 `m5` 只是 lambda），剔除 `ShopMall` |
+| 酷安去广告 | 酷安 | 见下节 |
+| 作用域预置 | 三个 App | `res/values/arrays.xml` 的 `xposedscope`：`com.dragon.read` / `com.phoenix.read` / `com.coolapk.market` |
+
+tab 的移除点选在配置落库那一层；但 `<clinit>` 里还写死了一份默认 tab 表（`m5.e` / `b5.e`），
+服务端配置未下发时 `MainFragmentActivity` 读的就是这份，所以在 `q()` 之后还要清一次静态表。
+
+构建时 `LOG_ENABLED=true ./build.sh` 可打开调试日志（输出到 logcat 的 `LSPosed-Bridge` tag）；
+默认 release 版 `LOG=false` 是编译期常量，不产生任何日志输出、也不写文件。
+
+### 酷安：加固带来的限制
+
+酷安 16.7.3 的 `classes.dex` 是**网易易盾加固**的壳：只有 30 个 `com.netease.nis.wrapper.*` 类，
+真实业务代码在 `libnesec.so` 里运行时才解密，静态分析拿不到任何 `com.coolapk.market` 业务类名
+（`baseline.prof`、resources、assets 里也都没有）。所以它的广告模块无法「枚举」，只能：
+
+- 按通用特征处理：命中「广告 / 推广 / 赞助」小字号角标时，把所在列表 item 折叠（`height=0` + `GONE`）；
+- 运行时侦察：挂 `ClassLoader.loadClass`，把加载到的 `com.coolapk.market` 广告相关类名与方发表写进 Xposed 日志，
+  下一版据此做精确 hook。
+
+要彻底清掉自有信息流广告，需要在已 root 的设备上 dump 解密后的 dex（如 frida-dexdump）后再分析。
+
 ## 限制与风险
 
 - **仅客户端生效**。VIP 专享内容下发、播放鉴权、CDN 签名仍按真实账号权益，典型表现是「显示 VIP 但内容打不开 / 仍提示购买」。

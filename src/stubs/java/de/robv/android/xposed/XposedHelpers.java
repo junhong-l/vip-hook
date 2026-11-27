@@ -17,4 +17,15 @@ public final class XposedHelpers {
             Object... parameterTypesAndCallback) {
         return null;
     }
+
+    public static Object getObjectField(Object obj, String fieldName) {
+        return null;
+    }
+
+    public static void setObjectField(Object obj, String fieldName, Object value) {
+    }
+
+    public static boolean getBooleanField(Object obj, String fieldName) {
+        return false;
+    }
 }

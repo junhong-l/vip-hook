@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-# 构建 viphook.apk（无资源 Xposed 模块）
+# 构建 viphook.apk（Xposed 模块）
+#
+#   ./build.sh                          # release：不输出任何日志
+#   LOG_ENABLED=true ./build.sh out.apk # debug：把 hook 情况打到 logcat（tag LSPosed-Bridge）
+#
 # 依赖：JDK（javac/jar）、Android build-tools 36、platforms/android-34
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -9,28 +13,43 @@ AJ="${AJ:-/opt/android-sdk/platforms/android-34/android.jar}"
 OUT="${1:-viphook.apk}"
 KS="${KS:-viphook.keystore}"
 KS_PASS="${KS_PASS:-viphook}"
+LOG_ENABLED="${LOG_ENABLED:-false}"
+VERSION_NAME="${VERSION_NAME:-2.3}"
+
+echo "==> 0/5 生成 Config（log=${LOG_ENABLED}）"
+mkdir -p build/gen/com/vip/hook
+cat > build/gen/com/vip/hook/Config.java <<EOF
+package com.vip.hook;
+
+final class Config {
+    static final boolean LOG = $LOG_ENABLED;
+}
+EOF
 
 echo "==> 1/5 编译 Java"
 rm -rf build/classes build/dex build/base.apk build/aligned.apk
 mkdir -p build/classes build/dex
 javac --release 11 -encoding UTF-8 \
+      -classpath "$AJ" \
       -d build/classes \
-      $(find src/stubs/java src/main/java -name '*.java')
+      $(find src/stubs/java src/main/java build/gen -name '*.java')
 
 echo "==> 2/5 生成 stub 引用 jar（仅编译期，不入包）"
 jar cf build/stubs.jar -C build/classes de
 
 echo "==> 3/5 汇编 dex（只含模块自身类）"
-"$BT/d8" --min-api 21 --lib build/stubs.jar \
+"$BT/d8" --min-api 21 --lib "$AJ" --lib build/stubs.jar \
       --output build/dex \
       $(find build/classes/com -name '*.class')
 cp build/dex/classes.dex build/classes.dex
 
-echo "==> 4/5 打包（aapt2 link + zip）"
+echo "==> 4/5 打包（aapt2 编译资源 + link + zip）"
+"$BT/aapt2" compile --dir res -o build/res.zip
 "$BT/aapt2" link -o build/base.apk \
       --manifest AndroidManifest.xml -I "$AJ" \
+      build/res.zip \
       --min-sdk-version 21 --target-sdk-version 34 \
-      --version-code 2 --version-name 1.1
+      --version-code 4 --version-name "$VERSION_NAME"
 zip -q -X -j build/base.apk build/classes.dex
 zip -q -X build/base.apk assets/xposed_init
 
@@ -47,5 +66,5 @@ fi
       --out "$OUT" build/aligned.apk
 "$BT/apksigner" verify --print-certs "$OUT" 2>/dev/null | head -2
 
-echo "==> 完成：$OUT ($(du -h "$OUT" | cut -f1))"
+echo "==> 完成：$OUT ($(du -h "$OUT" | cut -f1))  version=$VERSION_NAME  log=$LOG_ENABLED"
 echo "    dex md5: $(md5sum build/classes.dex | cut -d' ' -f1)"
