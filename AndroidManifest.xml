@@ -4,7 +4,7 @@
     <application android:label="番茄/红果/酷安 改造">
         <meta-data android:name="xposedmodule" android:value="true" />
         <meta-data android:name="xposeddescription" android:value="番茄小说 &amp; 红果短剧：VIP、免广告、隐藏付费入口、移除指定底部 tab；酷安：去除广告卡片" />
-        <meta-data android:name="xposedminversion" android:value="82" />
+        <meta-data android:name="xposedminversion" android:value="93" />
         <!-- 推荐作用域：LSPosed 首次启用时自动勾选 -->
         <meta-data android:name="xposedscope" android:resource="@array/xposedscope" />
     </application>

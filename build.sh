@@ -14,7 +14,7 @@ OUT="${1:-viphook.apk}"
 KS="${KS:-viphook.keystore}"
 KS_PASS="${KS_PASS:-viphook}"
 LOG_ENABLED="${LOG_ENABLED:-false}"
-VERSION_NAME="${VERSION_NAME:-2.3}"
+VERSION_NAME="${VERSION_NAME:-2.6}"
 
 echo "==> 0/5 生成 Config（log=${LOG_ENABLED}）"
 mkdir -p build/gen/com/vip/hook

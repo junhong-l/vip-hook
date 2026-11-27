@@ -186,20 +186,38 @@ $BT/dexdump classesN.dex | awk -v RS="Class #" \
 tab 的移除点选在配置落库那一层；但 `<clinit>` 里还写死了一份默认 tab 表（`m5.e` / `b5.e`），
 服务端配置未下发时 `MainFragmentActivity` 读的就是这份，所以在 `q()` 之后还要清一次静态表。
 
-构建时 `LOG_ENABLED=true ./build.sh` 可打开调试日志（输出到 logcat 的 `LSPosed-Bridge` tag）；
+构建时 `LOG_ENABLED=true ./build.sh` 可打开调试日志：除了 `XposedBridge.log`，还会用
+`android.util.Log.e("viphook", …)` 输出到 logcat——LSPosed 2.x 不一定会把模块日志写进 logcat，
+`adb logcat -s viphook` 是设备上最可靠的观察通道（需要 root 才能读全）。
 默认 release 版 `LOG=false` 是编译期常量，不产生任何日志输出、也不写文件。
 
-### 酷安：加固带来的限制
+### 酷安：加固下的做法
 
-酷安 16.7.3 的 `classes.dex` 是**网易易盾加固**的壳：只有 30 个 `com.netease.nis.wrapper.*` 类，
-真实业务代码在 `libnesec.so` 里运行时才解密，静态分析拿不到任何 `com.coolapk.market` 业务类名
-（`baseline.prof`、resources、assets 里也都没有）。所以它的广告模块无法「枚举」，只能：
+酷安 16.7.4 的 `classes.dex` 是**网易易盾加固**的壳：dex 头里只有 30 个 `com.netease.nis.wrapper.*` 类，
+真实业务代码在运行时才解密，静态分析拿不到任何方法体。但壳里保留了原 dex 的字符串池，
+**类名是全的**（约 3758 个 `com.coolapk.market.*`），所以依然可以按类名做精确 hook：
 
-- 按通用特征处理：命中「广告 / 推广 / 赞助」小字号角标时，把所在列表 item 折叠（`height=0` + `GONE`）；
-- 运行时侦察：挂 `ClassLoader.loadClass`，把加载到的 `com.coolapk.market` 广告相关类名与方发表写进 Xposed 日志，
-  下一版据此做精确 hook。
+| 目标 | 实现 |
+|---|---|
+| 开屏广告（独立页） | 挂 `Activity.onCreate` before，类名是 `com.coolapk.market.view.splash.SplashAdActivity` 时 `finish()` 并拉回 `MainActivity` |
+| 开屏广告（MainActivity 内） | 酷安还有一套开屏是直接挂在 `MainActivity` 布局里的全屏容器 `com.coolapk.market:id/main_splash_ad`——不出现时是空的，出现时不定期。按资源 id 解析后强制 `GONE`，并挂 `View.setVisibility` 盯住它被重新置为可见 |
+| 插屏广告 | 命中 `com.coolapk.market.view.ad.interstitial.InterstitialAdActivity`，只 `finish()`，保留它下面的页面 |
+| 原生广告卡片（穿山甲 / TopOn） | 挂 `TextView.setText(CharSequence, BufferType)` 按角标文案兜底；同时给 `com.coolapk.market.view.ad.*` 下所有 View 的构造函数挂钩，容器一创建就隐藏所在列表 item |
+| 推广卡片（「酷安专属优惠 / 去看看」） | 这类卡片没有任何「广告」字样，唯一稳定特征是按 `com.coolapk.market:id/action_view`（按资源 id 名匹配）出现的 CTA 文案，命中后隐藏所在 item |
+| 列表 item 定位与留白 | `RecyclerView.Adapter#bindViewHolder`（final，所有子类必经）在绑定前给 item 根视图打 tag；隐藏时按 tag 命中，同时把高度压成 0（GridView / 部分列表只设 GONE 会留下整块空白），下次绑定前还原高度 |
 
-要彻底清掉自有信息流广告，需要在已 root 的设备上 dump 解密后的 dex（如 frida-dexdump）后再分析。
+信息流这块的坑，都是「时灵时不灵」的来源：
+
+- 角标文案不一定是纯「广告」，还可能是「广告·京东」「推广」，早期版本的精确匹配会漏；
+- 只挂单参 `setText` 会漏掉显式传 `BufferType` 的调用，现在挂两参（单参最终都走它）；
+- 列表预取时 item 根视图还没挂到 RecyclerView 上，父链是断的，向上找 RecyclerView 会失败；
+- 折叠只改 `visibility`，不改 `LayoutParams.height`：height 会跟着复用的 holder 流转，
+  导致普通卡片变成空白行。
+
+运行时侦察仍然保留（`LOG_ENABLED=true` 构建）：挂 `ClassLoader.loadClass` 记录加载到的广告相关类，
+用于后续把信息流广告也换成数据层过滤。
+
+要彻底定位信息流广告的数据来源，需要在已 root 的设备上 dump 解密后的 dex（如 frida-dexdump）后再分析。
 
 ## 限制与风险
 
