@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 模块作用域：只作用于这两个 App -->
+    <string-array name="xposedscope">
+        <item>com.microsoft.teams</item>
+        <item>com.microsoft.office.outlook</item>
+    </string-array>
+</resources>
